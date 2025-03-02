@@ -1,1 +1,1 @@
-# gnn-accelerator
+# GNN-Accelerator for Symbolic AI
