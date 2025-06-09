@@ -4,70 +4,82 @@ module bf16_adder (
   output [15:0] sum
 );
 
-  wire        sign_a = a[15];
-  wire [7:0]  exp_a  = a[14:7];
-  wire [6:0]  man_a  = a[6:0];
-  wire        sign_b = b[15];
-  wire [7:0]  exp_b  = b[14:7];
-  wire [6:0]  man_b  = b[6:0];
+  wire sign_a = a[15];
+  wire [7:0] exp_a = a[14:7];
+  wire [6:0] man_a = a[6:0];
 
-  wire [7:0] sig_a = (exp_a == 8'd0) ? {1'b0, man_a} : {1'b1, man_a};
-  wire [7:0] sig_b = (exp_b == 8'd0) ? {1'b0, man_b} : {1'b1, man_b};
+  wire sign_b = b[15];
+  wire [7:0] exp_b = b[14:7];
+  wire [6:0] man_b = b[6:0];
+
+  // Add implicit leading 1 to mantissa if normalized
+  wire [7:0] frac_a = (exp_a == 0) ? {1'b0, man_a} : {1'b1, man_a};
+  wire [7:0] frac_b = (exp_b == 0) ? {1'b0, man_b} : {1'b1, man_b};
 
   wire [7:0] exp_diff = (exp_a > exp_b) ? (exp_a - exp_b) : (exp_b - exp_a);
+  wire [9:0] aligned_a = (exp_a >= exp_b) ? {frac_a, 2'b00} : ({frac_a, 2'b00} >> exp_diff);
+  wire [9:0] aligned_b = (exp_b >= exp_a) ? {frac_b, 2'b00} : ({frac_b, 2'b00} >> exp_diff);
+  wire [7:0] exp_common = (exp_a >= exp_b) ? exp_a : exp_b;
 
-  wire [9:0] sig_a_shifted = (exp_a >= exp_b) ? {sig_a, 2'b00} : ({sig_a, 2'b00} >> exp_diff);
-  wire [9:0] sig_b_shifted = (exp_b >= exp_a) ? {sig_b, 2'b00} : ({sig_b, 2'b00} >> exp_diff);
+  reg [10:0] result_sig;
+  reg result_sign;
 
-  wire [7:0] exp_max = (exp_a >= exp_b) ? exp_a : exp_b;
-
-  reg [10:0] sig_res;
-  reg        res_sign;
-
+  // Addition/Subtraction
   always @(*) begin
     if (sign_a == sign_b) begin
-      sig_res = sig_a_shifted + sig_b_shifted;
-      res_sign = sign_a;
+      result_sig = aligned_a + aligned_b;
+      result_sign = sign_a;
     end else begin
-      if (sig_a_shifted >= sig_b_shifted) begin
-        sig_res = sig_a_shifted - sig_b_shifted;
-        res_sign = sign_a;
+      if (aligned_a >= aligned_b) begin
+        result_sig = aligned_a - aligned_b;
+        result_sign = sign_a;
       end else begin
-        sig_res = sig_b_shifted - sig_a_shifted;
-        res_sign = sign_b;
+        result_sig = aligned_b - aligned_a;
+        result_sign = sign_b;
       end
     end
   end
 
-  reg [6:0] mantissa_out;
-  reg [7:0] exponent_out;
-  integer i;
+  reg [6:0] mantissa;
+  reg [7:0] exponent;
+  reg [10:0] norm_sig;
+  integer shift;
 
   always @(*) begin
-    if (sig_res == 0) begin
-      mantissa_out = 0;
-      exponent_out = 0;
-      res_sign = 0;
+    if (result_sig == 0) begin
+      mantissa = 0;
+      exponent = 0;
+      result_sign = 0;
     end else begin
-      exponent_out = exp_max;
-      for (i = 9; i >= 0; i = i - 1) begin
-        if (sig_res[i]) begin
-          if (i < 9) begin
-            mantissa_out = sig_res[i-1 -:7];
-            exponent_out = exponent_out - (9 - i);
-          end else begin
-            mantissa_out = sig_res[8:2];
-            if (sig_res[10]) begin
-              mantissa_out = sig_res[9:3];
-              exponent_out = exponent_out + 1;
-            end
-          end
-          disable for;
+      norm_sig = result_sig;
+      exponent = exp_common;
+
+      // Normalize
+      if (norm_sig[10]) begin
+        // MSB overflow: shift right
+        norm_sig = norm_sig >> 1;
+        exponent = exponent + 1;
+      end else begin
+        shift = 0;
+        while (!norm_sig[9] && exponent > 0 && shift < 10) begin
+          norm_sig = norm_sig << 1;
+          exponent = exponent - 1;
+          shift = shift + 1;
+        end
+      end
+
+      // Rounding (nearest even)
+      mantissa = norm_sig[8:2]; // Take top 7 bits
+      if (norm_sig[1] && (norm_sig[0] || norm_sig[2])) begin
+        mantissa = mantissa + 1;
+        if (mantissa == 7'b10000000) begin
+          mantissa = 7'b01000000;
+          exponent = exponent + 1;
         end
       end
     end
   end
 
-  assign sum = {res_sign, exponent_out, mantissa_out};
+  assign sum = {result_sign, exponent, mantissa};
 
 endmodule
