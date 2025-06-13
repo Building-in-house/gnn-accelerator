@@ -1,1 +1,1 @@
-# GNN-Accelerator for Symbolic AI
+# Accelerator Chiplets
